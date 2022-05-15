@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const port = process.env.PORT || 5000;
@@ -14,11 +15,23 @@ const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster
 
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
 
+function verifyJWT(req, res, next) {
+    const authHeaders = req.headers.authorization;
+    if (!authHeaders) return res.status(401).send({ message: 'UnAuthorized access' });
+    const token = authHeaders.split(' ')[1];
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function (err, decoded) {
+        if (err) return res.status(403).send('Forbidden');
+        req.decoded = decoded;
+        next();
+    });
+}
+
 async function run() {
     try {
         await client.connect();
         const serviceCollection = client.db("doctors_portal").collection("services");
         const bookingCollection = client.db("doctors_portal").collection("bookings");
+        const userCollection = client.db("doctors_portal").collection("user");
 
         app.get('/service', async (req, res) => {
             const query = {};
@@ -27,8 +40,26 @@ async function run() {
             res.send(services);
         });
 
+        app.get('/users', verifyJWT, async (req, res) => {
+            const users = await userCollection.find().toArray();
+            res.send(users);
+        });
+
+        app.put('/user/admin/:email', async (req, res) => {
+            const email = req.params.email;
+            const filter = { email: email };
+            const updatedDoc = {
+                $set: { role: 'admin' }
+            };
+            const result = await userCollection.updateOne(filter, updatedDoc);
+            res.send(result);
+        });
+
+
+        // this is not the proper way to query
+        // after learning more about mongodb use aggregate lookup, pipeline, match, group.
         app.get('/available', async (req, res) => {
-            const date = req.query.date || "May 13, 2022";
+            const date = req.query.date;
             // get all services
             const services = await serviceCollection.find().toArray();
 
@@ -38,14 +69,44 @@ async function run() {
 
             // for each service find booking for that service
             services.forEach(service => {
-                const serviceBookings = bookings.filter(b => b.treatment === service.name);
-                const booked = serviceBookings.map(s => s.slot);
-                const available = service.slots.filter(s => !booked.includes(s));
-                service.available = available;
+                const serviceBookings = bookings.filter(book => book.treatment === service.name);
+                const bookedSlots = serviceBookings.map(book => book.slot);
+                const available = service.slots.filter(slot => !bookedSlots.includes(slot));
+                service.slots = available;
             })
 
-            res.send(bookings);
-        })
+            res.send(services);
+        });
+
+        app.get('/booking', verifyJWT, async (req, res) => {
+            const patient = req.query.patient;
+            const decodedEmail = req.decoded.email;
+            if (patient === decodedEmail) {
+                const query = { patient: patient };
+                const bookings = await bookingCollection.find(query).toArray();
+                res.send(bookings)
+            }
+            else {
+                return res.status(403).send('Forbidden');
+            }
+
+        });
+
+        app.put('/user/:email', async (req, res) => {
+            const email = req.params.email;
+            const user = req.body;
+            const filter = { email: email };
+            const options = { upsert: true };
+            const updatedDoc = {
+                $set: user
+            };
+            const result = await userCollection.updateOne(filter, updatedDoc, options);
+
+            const token = jwt.sign({ email: email }, process.env.ACCESS_TOKEN_SECRET, {
+                expiresIn: '4d'
+            });
+            res.send({ result, token });
+        });
 
         app.post('/booking', async (req, res) => {
             const booking = req.body;
