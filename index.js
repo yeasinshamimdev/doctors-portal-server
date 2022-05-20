@@ -2,6 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
+
+const nodemailer = require('nodemailer');
+const mailchimp = require("@mailchimp/mailchimp_marketing");
+
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const port = process.env.PORT || 5000;
 
@@ -24,6 +28,72 @@ function verifyJWT(req, res, next) {
         req.decoded = decoded;
         next();
     });
+}
+
+mailchimp.setConfig({
+    apiKey: process.env.EMAIL_SENDER_KEY,
+    server: "us14",
+});
+
+
+async function sendAppointmentEmail(booking) {
+    const { treatment, date, slot, patient, patientName, phone } = booking;
+
+    const footerContactInfo = {
+        company: 'website bloging',
+        address1: 'Noakhali sadar',
+        city: 'Noakhali',
+        state: '',
+        zip: '3850',
+        country: 'BD',
+        phone: phone
+    }
+
+    const campaignDefaults = {
+        from_name: 'Yeasin',
+        from_email: 'yeasinshamim7@gmail.com',
+        subject: '',
+        language: 'en'
+    }
+
+    try {
+        const audience = await mailchimp.lists.createList({
+            name: patientName,
+            contact: footerContactInfo,
+            permission_reminder: "You are receiving this email because you opted in via our website.",
+            email_type_option: true,
+            campaign_defaults: campaignDefaults
+        });
+        const response = await mailchimp.lists.addListMember("a1be06ce02", {
+            email_address: patient,
+            status: 'subscribed',
+            email_type: 'html',
+            merge_fields: {
+                FNAME: patientName
+            },
+            tags: ['nodemailer, mailchimp']
+        });
+
+        const response2 = await client.campaigns.create({
+            type: "regular",
+            recipients: {
+                list_id: "a1be06ce02"
+            },
+            settings: {
+                preview_text: " ",
+                title: "",
+                template_id: "10018215",
+                from_name: patientName,
+                reply_to: patient,
+                to_name: " ",
+                auto_footer: true,
+                inline_css: true,
+            }
+        });
+        await mailchimp.campaigns.send(9075795)
+    }
+    finally { }
+
 }
 
 async function run() {
@@ -136,6 +206,7 @@ async function run() {
                 return res.send({ success: false, booking: exists });
             }
             const result = await bookingCollection.insertOne(booking);
+            sendAppointmentEmail(booking)
             return res.send({ success: true, result });
         });
 
